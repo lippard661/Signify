@@ -1,0 +1,3 @@
+Signify.pm is a perl wrapper for OpenBSD's signify,
+to simplify creating and verifying detached file signatures
+and signatures in gzipped tar files (e.g., signed packages).
