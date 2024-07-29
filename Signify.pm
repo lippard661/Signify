@@ -72,7 +72,7 @@ sub sign {
     # Sign.
     if (open (SIGSIGN, '|-', "$SIGNIFY_PATH -S -s $secret_key_path -m $file_path")) {
 	print SIGSIGN "$signify_passphrase\n";
-	close (SIGNSIGN);
+	close (SIGSIGN);
     }
     # Can't stop error from displaying here from signify.
     else {
