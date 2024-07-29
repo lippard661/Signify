@@ -1,5 +1,8 @@
 # Module wrapper around OpenBSD signify.
 # Written 27-28 July 2024 by Jim Lippard.
+# Modified 29 July 2024 by Jim Lippard to not export any names by
+#    default and to provide way to skip just the checks for signify
+#    executable binary or for other prechecks.
 
 package Signify;
 require 5.003;
@@ -14,10 +17,10 @@ use File::Copy qw(copy cp);
 use IO::Uncompress::Gunzip;
 
 @ISA = qw(Exporter);
-@EXPORT = qw(sign sign_gzip verify verify_gzip);
-@EXPORT_OK = qw(signify_error);
+@EXPORT = ();
+@EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0';
+$VERSION = '1.0a';
 
 # Global variables.
 
@@ -41,15 +44,18 @@ $SIGNIFY_KEY_DIR = '/etc/signify';
 # signify error
 # Last error will be displayed by signify command and not captured in @ERROR.
 sub sign {
-    my ($file_path, $signify_passphrase, $secret_key_path, $skip_prechecks) = @_;
+    my ($file_path, $signify_passphrase, $secret_key_path,
+	$skip_signify_check, $skip_prechecks) = @_;
 
-    if (!$skip_prechecks) {
+    if (!$skip_signify_check) {
 	# Need signify.
 	if (!-x $SIGNIFY_PATH) {
 	    @ERROR = ("no executable $SIGNIFY_PATH. $!\n");
 	    return undef;
 	}
-
+    }
+    
+    if (!$skip_prechecks) {
 	# Need file.
 	if (!-r "$file_path") {
 	    @ERROR = ("no readable file $file_path. $!\n");
@@ -57,8 +63,15 @@ sub sign {
 	}
 
 	# Need signature file to be writeable or nonexistent.
+	# This doesn't catch "permission denied" to create,
+	# not a missing directory in the path, which the signify
+	# command execution will. No $! set.
+	# !-w alone will return $! as either Permission denied
+	# or No such file or directory (which doesn't distinguish
+	# between directory or file), and will not account for
+	# immutable flags.
 	if (!-w "$file_path.sig" && -e "$file_path.sig") {
-	    @ERROR = ("cannot write signature file $file_path.sig. $!\n");
+	    @ERROR = ("cannot write signature file $file_path.sig.\n");
 	    return undef;
 	}
 
@@ -96,16 +109,19 @@ sub sign {
 # signature not verified
 # unexpected signature result, signature not verified. $result
 sub verify {
-    my ($file_path, $public_key_path, $skip_prechecks) = @_;
+    my ($file_path, $public_key_path,
+	$skip_signify_check, $skip_prechecks) = @_;
     my ($result);
 
-    if (!$skip_prechecks) {
+    if (!$skip_signify_check) {
 	# Need signify.
 	if (!-x $SIGNIFY_PATH) {
 	    @ERROR = ("no executable $SIGNIFY_PATH. $!\n");
 	    return undef;
 	}
+    }
 
+    if (!$skip_prechecks) {
 	# Need file and file signature.
 	if (!-r "$file_path") {
 	    @ERROR = ("no readable file $file_path. $!\n");
@@ -141,7 +157,8 @@ sub verify {
 
 # Sign a gzipped tar file, in place.
 # Must supply path of gzipped tar file, passphrase, secret key path,
-# and a temp dir to create the gzipped tar file in.
+# and a temp dir to create the gzipped tar file in. Optionally skip
+# signify check and file prechecks.
 # Possible errors:
 # Pre-signify errors:
 # no executable $SIGNIFY_PATH. $!
@@ -152,30 +169,35 @@ sub verify {
 # failed to sign gzip $gzip_path. $!
 # error signing gzip $gzip_path. Zero-length output.
 sub sign_gzip {
-    my ($gzip_path, $signify_passphrase, $secret_key_path, $temp_dir) = @_;
+    my ($gzip_path, $signify_passphrase, $secret_key_path, $temp_dir,
+	$skip_signify_check, $skip_prechecks) = @_;
 
-    # Need signify.
-    if (!-x $SIGNIFY_PATH) {
-	@ERROR = ("no executable $SIGNIFY_PATH. $!\n");
-	return undef;
+    if (!$skip_signify_check) {
+	# Need signify.
+	if (!-x $SIGNIFY_PATH) {
+	    @ERROR = ("no executable $SIGNIFY_PATH. $!\n");
+	    return undef;
+	}
     }
 
-    # Need a readable secret key.
-    if (!-r $secret_key_path) {
-	@ERROR = ("no readable secret key $secret_key_path. $!\n");
-	return undef;
-    }
+    if (!$skip_prechecks) {
+	# Need a readable secret key.
+	if (!-r $secret_key_path) {
+	    @ERROR = ("no readable secret key $secret_key_path. $!\n");
+	    return undef;
+	}
 
-    # Need a readable gzipped tar file.
-    if (!-r $gzip_path) {
-	@ERROR = ("no readable gzip $gzip_path. $!\n");
-	return undef;
-    }
+	# Need a readable gzipped tar file.
+	if (!-r $gzip_path) {
+	    @ERROR = ("no readable gzip $gzip_path. $!\n");
+	    return undef;
+	}
 
-    # Need write permission on gzipped tar file.
-    if (!-w $gzip_path) {
-	@ERROR = ("no writeable gzip $gzip_path. $!\n");
-	return undef;
+	# Need write permission on gzipped tar file.
+	if (!-w $gzip_path) {
+	    @ERROR = ("no writeable gzip $gzip_path. $!\n");
+	    return undef;
+	}
     }
 
     # Sign the gzip.
@@ -201,6 +223,9 @@ sub sign_gzip {
 
 # Verify that a gzipped tar file is signed.
 # Arguments after $temp_dir are optional.
+# Can require a specific public key file name or specific secret key
+# pathname in the comment. Can optionally skip check for signify or
+# other prechecks (and postchecks dependent upon the prechecks).
 # Returns signer and date.
 # Possible errors:
 # Pre-signify:
@@ -220,7 +245,8 @@ sub sign_gzip {
 # signify verified: key file in gzip header is "$secret_key_file" but actual signing key file is "$signer_secret_key_file"
 sub verify_gzip {
     my ($gzip_path, $temp_dir,
-	$require_public_key_file, $require_secret_key_path) = @_;
+	$require_public_key_file, $require_secret_key_path,
+	$skip_signify_check, $skip_prechecks) = @_;
     my ($sig_comment, $signature, $sig_date, $sig_key);
     my ($sig_public_key_file);
     my ($secret_key_path, $secret_key_dir, $secret_key_file);
@@ -228,62 +254,67 @@ sub verify_gzip {
     my ($signer_secret_key_dir, $signer_secret_key_file);
     my ($verified, $errmsg, $signer, $signdate);
 
-    # Need signify.
-    if (!-x $SIGNIFY_PATH) {
-	@ERROR = ("no executable $SIGNIFY_PATH. $!\n");
-	return undef;
+    if (!$skip_signify_check) {
+	# Need signify.
+	if (!-x $SIGNIFY_PATH) {
+	    @ERROR = ("no executable $SIGNIFY_PATH. $!\n");
+	    return undef;
+	}
     }
+
+    # Might need even if $skip_prechecks.
+    ($require_secret_key_file, $require_secret_key_dir) = fileparse ($require_secret_key_path) if (defined ($require_secret_key_path));
 
     # This pre-checking precludes some of the issues that might come up
     # in _verify_gzip_signature or from signify itself, though those
     # cases are still handled there anyway. This means some error messages
     # will be less precise than they could be.
-    # Could revise this to only do pre-checks if the require_ values are
-    # set, but the pre-check acquired gzip comments are also used in
-    # post-verification checks.
-    
-    # Pull out the pubkey name from the comment, the signature, the signing date, and the secret key path.
-    if (!open (GZIP, '<', $gzip_path)) {
-	@ERROR = ("Could not open gzip $gzip_path to verify signature. $!\n");
-	return undef;
-    }
-    seek (GZIP, 0, 10); # skip 10-byte header
-    $sig_comment = <GZIP>; # "untrusted comment: verify with <pubkey>.pub"
-    $signature = <GZIP>; # <digital signature>
-    $sig_date = <GZIP>; # "date=yyyy-mm-ddThh:mm:ssZ"
-    $sig_key = <GZIP>; # "key=<path>.sec"
-    close (GZIP);
+    # Can skip pre-checks with optional parameter; this also disables
+    # the post-checks that are dependent upon gzip comments.
 
-    if ($sig_comment =~ /untrusted comment: verify with ([\w\.-]+)/) {
-	$sig_public_key_file = $1;
-
-	if (defined ($require_public_key_file) &&
-	    $sig_public_key_file ne $require_public_key_file) {
-	    @ERROR = ("gzip header: untrusted comment public key is \"$sig_public_key_file\" but required is \"$require_public_key_file\"\n");
+    if (!$skip_prechecks) {
+	# Pull out the pubkey name from the comment,
+	# the signature, the signing date, and the secret key path.
+	if (!open (GZIP, '<', $gzip_path)) {
+	    @ERROR = ("Could not open gzip $gzip_path to verify signature. $!\n");
 	    return undef;
 	}
-	
-	if ($sig_key =~ /key=(.*)$/) {
-	    $secret_key_path = $1;
-	}
-	else {
-	    @ERROR = ("gzip header: no key path where expected, found \"$sig_key\"\n");
-	    return undef;
-	}
+	seek (GZIP, 0, 10); # skip 10-byte header
+	$sig_comment = <GZIP>; # "untrusted comment: verify with <pubkey>.pub"
+	$signature = <GZIP>; # <digital signature>
+	$sig_date = <GZIP>; # "date=yyyy-mm-ddThh:mm:ssZ"
+	$sig_key = <GZIP>; # "key=<path>.sec"
+	close (GZIP);
 
-	# Used later whether or not require_secret_key_path is used.
-	($secret_key_file, $secret_key_dir) = fileparse ($secret_key_path); # from gzip header
+	if ($sig_comment =~ /untrusted comment: verify with ([\w\.-]+)/) {
+	    $sig_public_key_file = $1;
 
-	if (defined ($require_secret_key_path)) {
-	    ($require_secret_key_file, $require_secret_key_dir) = fileparse ($require_secret_key_path);
-
-	    if ($secret_key_dir ne $require_secret_key_dir) {
-		@ERROR = ("gzip header: key directory in comment is \"$secret_key_dir\" but required is \"$require_secret_key_dir\"\n");
+	    if (defined ($require_public_key_file) &&
+		$sig_public_key_file ne $require_public_key_file) {
+		@ERROR = ("gzip header: untrusted comment public key is \"$sig_public_key_file\" but required is \"$require_public_key_file\"\n");
 		return undef;
 	    }
-	    if ($secret_key_file ne $require_secret_key_file) {
-		@ERROR = ("gzip header: key file in comment is \"$secret_key_file\" but required is \"$require_secret_key_file\"\n");
-		return undef;	
+	
+	    if ($sig_key =~ /key=(.*)$/) {
+		$secret_key_path = $1;
+	    }
+	    else {
+		@ERROR = ("gzip header: no key path where expected, found \"$sig_key\"\n");
+		return undef;
+	    }
+
+	    # Used later whether or not require_secret_key_path is used.
+	    ($secret_key_file, $secret_key_dir) = fileparse ($secret_key_path); # from gzip header
+
+	    if (defined ($require_secret_key_path)) {
+		if ($secret_key_dir ne $require_secret_key_dir) {
+		    @ERROR = ("gzip header: key directory in comment is \"$secret_key_dir\" but required is \"$require_secret_key_dir\"\n");
+		    return undef;
+		}
+		if ($secret_key_file ne $require_secret_key_file) {
+		    @ERROR = ("gzip header: key file in comment is \"$secret_key_file\" but required is \"$require_secret_key_file\"\n");
+		    return undef;	
+		}
 	    }
 	}
 
@@ -296,13 +327,28 @@ sub verify_gzip {
 
 	# Check again to make sure signer matches the comment in gzip header.
 	($signer_secret_key_file, $signer_secret_key_dir) = fileparse ($signer);
-	if ($signer_secret_key_dir ne $secret_key_dir) {
-	    @ERROR = ("signify verified: key directory in gzip header is \"$secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
-	    return undef;
+
+	if (!$skip_prechecks) {
+	    if ($signer_secret_key_dir ne $secret_key_dir) {
+		@ERROR = ("signify verified: key directory in gzip header is \"$secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
+		return undef;
+	    }
+	    if ($signer_secret_key_file ne $secret_key_file) {
+		@ERROR = ("signify verified: key file in gzip header is \"$secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+		return undef;
+	    }
 	}
-	if ($signer_secret_key_file ne $secret_key_file) {
-	    @ERROR = ("signify verified: key file in gzip header is \"$secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
-	    return undef;
+
+	# Signer must match required.
+	if (defined ($require_secret_key_path)) {
+	    if ($signer_secret_key_dir ne $require_secret_key_dir) {
+		@ERROR = ("signify verified: required key directory is \"$require_secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
+		return undef;
+	    }
+	    if ($signer_secret_key_file ne $require_secret_key_file) {
+		@ERROR = ("signify verified: required key file is \"$require_secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+		return undef;
+	    }
 	}
 
 	return ($signer, $signdate);

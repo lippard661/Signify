@@ -1,1 +1,4 @@
 1.0: First version.
+1.0a: Changed parameters for bypassing prechecks to allow bypassing
+	the signify binary executable check first, improved checking
+	of required secret key path for verify_gzip.
