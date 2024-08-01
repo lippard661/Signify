@@ -4,6 +4,6 @@ file signatures and signatures in gzipped tar files (e.g., signed packages).
 
 Also available at https://www.discord.org/lippard/software
 
-p5-Signify-1.0a.tgz is a Legion of Dynamic Discord signify-signed OpenBSD package. Signify public key is https://www.discord.org/lippard/software/discord.org-2024-pkg.pub
+p5-Signify-1.0b.tgz is a Legion of Dynamic Discord signify-signed OpenBSD package. Signify public key is https://www.discord.org/lippard/software/discord.org-2024-pkg.pub
 
-Current version is Signify-1.0a of 29 July 2024.
+Current version is Signify-1.0b of 1 August 2024.
