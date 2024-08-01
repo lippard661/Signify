@@ -2,7 +2,9 @@
 # Written 27-28 July 2024 by Jim Lippard.
 # Modified 29 July 2024 by Jim Lippard to not export any names by
 #    default and to provide way to skip just the checks for signify
-#    executable binary or for other prechecks.
+#    executable binary or for other prechecks (except in sign_gzip).
+# Modified 31 July 2024 by Jim Lippard so that $require_public_key_file
+#    isn't a no-op if $skip_prechecks=1.
 
 package Signify;
 require 5.003;
@@ -20,7 +22,7 @@ use IO::Uncompress::Gunzip;
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0a';
+$VERSION = '1.0b';
 
 # Global variables.
 
@@ -224,8 +226,8 @@ sub sign_gzip {
 # Verify that a gzipped tar file is signed.
 # Arguments after $temp_dir are optional.
 # Can require a specific public key file name or specific secret key
-# pathname in the comment. Can optionally skip check for signify or
-# other prechecks (and postchecks dependent upon the prechecks).
+# pathname in the comment. Can optionally skip check for signify.
+# (Don't presently offer a way to skip the other pre- and post-checks.)
 # Returns signer and date.
 # Possible errors:
 # Pre-signify:
@@ -243,6 +245,11 @@ sub sign_gzip {
 # Post-signify checks:
 # signify verified: key directory in gzip header is "$secret_key_dir" but actual signing key directory is "$signer_secret_key_dir"
 # signify verified: key file in gzip header is "$secret_key_file" but actual signing key file is "$signer_secret_key_file"
+# if $require_secret_key_path
+# signify verified: required key directory is "$require_secret_key_dir" but actual signing key directory is "$signer_secret_key_dir"
+# signify verified: required key file is "$require_secret_key_file" but actual signing key file is "$signer_secret_key_file"
+# if $require_public_key_file && $skip_prechecks
+# signify verified: required public key file is "$require_public_key_file" but actual signing key file is "$signer_secret_key_file"
 sub verify_gzip {
     my ($gzip_path, $temp_dir,
 	$require_public_key_file, $require_secret_key_path,
@@ -350,6 +357,18 @@ sub verify_gzip {
 		return undef;
 	    }
 	}
+
+	# So $require_public_key_file isn't a no-op if $skip_prechecks = 1
+	if (defined ($require_public_key_file) && $skip_prechecks) {
+	    my $temp_require_secret_key_file = $require_public_key_file;
+	    $temp_require_secret_key_file =~ s/\.pub$/.sec/;
+	    if ($signer_secret_key_file ne $temp_require_secret_key_file) {
+		@ERROR = ("signify verified: required public key file is \"$require_public_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+		return undef;
+	    }
+	}
+
+
 
 	return ($signer, $signdate);
     }
