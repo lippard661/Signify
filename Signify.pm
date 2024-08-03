@@ -5,6 +5,17 @@
 #    executable binary or for other prechecks (except in sign_gzip).
 # Modified 31 July 2024 by Jim Lippard so that $require_public_key_file
 #    isn't a no-op if $skip_prechecks=1.
+# Modified 3 August 2024 by Jim Lippard to return signify error messages
+#    from verify and use same "signature not verified: $errmsg" wording
+#    in verify_gzip.
+
+# If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
+# required:
+# pledge: stdio, rpath, proc, exec, unveil
+#    tmppath for gzip_verify
+# unveil: /usr/bin/signify rx,
+#    if using prechecks: pubkey (or dir) r, file r, sigfile r
+# temp_dir rwc for gzip_verify and gzip_sign
 
 package Signify;
 require 5.003;
@@ -22,7 +33,7 @@ use IO::Uncompress::Gunzip;
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0b';
+$VERSION = '1.0c';
 
 # Global variables.
 
@@ -108,8 +119,12 @@ sub sign {
 # no readable signature file $file_path.sig. $!
 # no readable public key $public_key_path. $!
 # Post-signify errors:
-# signature not verified
+# signature not verified: $errmsg
 # unexpected signature result, signature not verified. $result
+# Errors from signify ($errmsg):
+# signify: verification failed: checked against wrong key
+# signify: can't open [$file_path|$file_path.sig|$public_key_path]for reading: [No such file or directory|Permission denied]
+# signify: invalid comment in $public_key_path; must start with 'untrusted comment: '
 sub verify {
     my ($file_path, $public_key_path,
 	$skip_signify_check, $skip_prechecks) = @_;
@@ -142,10 +157,10 @@ sub verify {
     }
 
     # Verify.
-    $result = `$SIGNIFY_PATH -V -p $public_key_path -m $file_path 2>/dev/null`;
+    $result = `$SIGNIFY_PATH -V -p $public_key_path -m $file_path 2>&1`;
     chop ($result);
     if ($?) {
-	@ERROR = ("signature not verified\n");
+	@ERROR = ("signature not verified: $result\n");
 	return undef;
     }
     elsif ($result eq 'Signature Verified') {
@@ -240,7 +255,7 @@ sub sign_gzip {
 # gzip header: key directory in comment is "$secret_key_dir" but required is "$require_secret_key_dir"
 # gzip header: key file in comment is "$secret_key_file" but required is "$require_secret_key_file"
 # Execution errors from signify (via _verify_gzip_signature, see below):
-# signify error: $errmsg
+# signature not verified: $errmsg
 #   (specific $errmsg possibilities documented on _verify_gzip_signature)
 # Post-signify checks:
 # signify verified: key directory in gzip header is "$secret_key_dir" but actual signing key directory is "$signer_secret_key_dir"
@@ -328,7 +343,7 @@ sub verify_gzip {
 	($verified, $errmsg, $signer, $signdate) = &_verify_gzip_signature ($gzip_path, $temp_dir);
 
 	if (!$verified) {
-	    @ERROR = ("signify error: $errmsg\n");
+	    @ERROR = ("signature not verified: $errmsg\n");
 	    return undef;
 	}
 
