@@ -8,6 +8,8 @@
 # Modified 3 August 2024 by Jim Lippard to return signify error messages
 #    from verify and use same "signature not verified: $errmsg" wording
 #    in verify_gzip.
+# Modified 13 September 2025 by Jim Lippard to use signify-openbsd if
+#    running on Linux.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -33,7 +35,7 @@ use IO::Uncompress::Gunzip;
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0c';
+$VERSION = '1.0d';
 
 # Global variables.
 
@@ -42,6 +44,9 @@ $VERSION = '1.0c';
 
 # Path to signify.
 $SIGNIFY_PATH = '/usr/bin/signify';
+
+# Debian path to signify.
+$SIGNIFY_PATH = '/usr/bin/signify-openbsd' if $^O eq 'linux';
 
 # Signify keys dir.
 $SIGNIFY_KEY_DIR = '/etc/signify';
