@@ -10,6 +10,9 @@
 #    in verify_gzip.
 # Modified 13 September 2025 by Jim Lippard to use signify-openbsd if
 #    running on Linux.
+# Modified 22 October 2025 by Jim Lippard to accept either "/etc/signify"
+#    or  "./" as a key directory since it is no longer set by pkg_sign
+#    as of OpenBSD 7.8.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -25,7 +28,7 @@ require 5.003;
 use Exporter ();
 
 use strict;
-use vars qw(@ERROR @EXPORT @EXPORT_OK @ISA $SIGNIFY_PATH $SIGNIFY_KEY_DIR $VERSION);
+use vars qw(@ERROR @EXPORT @EXPORT_OK @ISA $SIGNIFY_PATH $SIGNIFY_KEY_DIR $ALT_KEY_DIR $VERSION);
 
 use File::Basename qw(fileparse);
 use File::Copy qw(copy cp);
@@ -35,7 +38,7 @@ use IO::Uncompress::Gunzip;
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0d';
+$VERSION = '1.0e';
 
 # Global variables.
 
@@ -50,6 +53,7 @@ $SIGNIFY_PATH = '/usr/bin/signify-openbsd' if $^O eq 'linux';
 
 # Signify keys dir.
 $SIGNIFY_KEY_DIR = '/etc/signify';
+$ALT_KEY_DIR = './';
 
 # Sign a file and create a detached signature file.
 # Optionally skip prechecks for signify and existence/readability of
@@ -334,7 +338,9 @@ sub verify_gzip {
 	    ($secret_key_file, $secret_key_dir) = fileparse ($secret_key_path); # from gzip header
 
 	    if (defined ($require_secret_key_path)) {
-		if ($secret_key_dir ne $require_secret_key_dir) {
+		if ($secret_key_dir ne $require_secret_key_dir &&
+		    $secret_key_dir ne $SIGNIFY_KEY_DIR &&
+		    $secret_key_dir ne $ALT_KEY_DIR) {
 		    @ERROR = ("gzip header: key directory in comment is \"$secret_key_dir\" but required is \"$require_secret_key_dir\"\n");
 		    return undef;
 		}
@@ -368,7 +374,9 @@ sub verify_gzip {
 
 	# Signer must match required.
 	if (defined ($require_secret_key_path)) {
-	    if ($signer_secret_key_dir ne $require_secret_key_dir) {
+	    if ($signer_secret_key_dir ne $require_secret_key_dir &&
+		$signer_secret_key_dir ne $SIGNIFY_KEY_DIR &&
+		$signer_secret_key_dir ne $ALT_KEY_DIR) {
 		@ERROR = ("signify verified: required key directory is \"$require_secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
 		return undef;
 	    }
