@@ -9,3 +9,5 @@
 1.0e: Be less strict on key dir since OpenBSD 7.8 doesn't include it.
 1.1: Cleanup: avoid shell, use chomp instead of chop, use randomly named temp
 	files in gzip handling.
+1.1a: Remove use of backticks with IPC::Open3 and no longer manually parse
+	gzip header or depend on comment field order.

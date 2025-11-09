@@ -15,7 +15,9 @@
 #    as of OpenBSD 7.8.
 # Modified 8 November 2025 by Jim Lippard to avoid shell on file opens,
 #    use chomp instead of chop, use randomly named temp files instead
-#    of static names for gzip handling.
+#    of static names for gzip handling, remove use of backticks with
+#    IPC::Open3, examine gzip header with IO::Uncompress::Gunzip instead
+#    of manually and avoid dependence on comment field order.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -38,12 +40,14 @@ use File::Basename qw(fileparse);
 use File::Copy qw(copy cp);
 use File::Temp qw(tempfile);
 use IO::Uncompress::Gunzip;
+use IPC::Open3;
+use Symbol 'gensym';
 
 @ISA = qw(Exporter);
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1';
+$VERSION = '1.1a';
 
 # Global variables.
 
@@ -142,7 +146,6 @@ sub sign {
 sub verify {
     my ($file_path, $public_key_path,
 	$skip_signify_check, $skip_prechecks) = @_;
-    my ($result);
 
     if (!$skip_signify_check) {
 	# Need signify.
@@ -171,17 +174,24 @@ sub verify {
     }
 
     # Verify.
-    $result = `$SIGNIFY_PATH -V -p $public_key_path -m $file_path 2>&1`;
-    chomp ($result);
-    if ($?) {
-	@ERROR = ("signature not verified: $result\n");
+    my $err = gensym;
+    my $pid = open3 (undef, my $out, $err, $SIGNIFY_PATH, '-V', '-p', $public_key_path, '-m', $file_path);
+    my $outstr = do { local $/; <$out> // '' };
+    my $errstr = do { local $/; <$err> // '' };
+    waitpid ($pid, 0);
+    my $exit = $? >> 8;
+    chomp ($outstr);
+    chomp ($errstr);
+    if ($exit != 0) {
+	my $msg = $errstr || $outstr;
+	@ERROR = ("signature not verified: $msg\n");
 	return undef;
     }
-    elsif ($result eq 'Signature Verified') {
+    elsif ($outstr =~ /Signature\s+Verified/i) {
 	return 1;
     }
     else {
-	@ERROR = ("unexpected signature result, signature not verified. $result\n");
+	@ERROR = ("unexpected signature result, signature not verified. $outstr $errstr\n");
 	return undef;
     }
 }
@@ -270,7 +280,8 @@ sub sign_gzip {
 # Could not open gzip $gzip_path to verify signature. $!
 # gzip header: no signify comment found
 # gzip header: untrusted comment public key is "$sig_public_key_file" but required is "$require_public_key_file"
-# gzip header: no key path where expected, found "$sig_key"
+# gzip header: no key path found
+# gzip header: no signature date found
 # gzip header: key directory in comment is "$secret_key_dir" but required is "$require_secret_key_dir"
 # gzip header: key file in comment is "$secret_key_file" but required is "$require_secret_key_file"
 # Execution errors from signify (via _verify_gzip_signature, see below):
@@ -288,7 +299,7 @@ sub verify_gzip {
     my ($gzip_path, $temp_dir,
 	$require_public_key_file, $require_secret_key_path,
 	$skip_signify_check, $skip_prechecks) = @_;
-    my ($sig_comment, $signature, $sig_date, $sig_key);
+    my ($sig_comment, $sig_date);
     my ($sig_public_key_file);
     my ($secret_key_path, $secret_key_dir, $secret_key_file);
     my ($require_secret_key_dir, $require_secret_key_file);
@@ -314,19 +325,28 @@ sub verify_gzip {
     # the post-checks that are dependent upon gzip comments.
 
     if (!$skip_prechecks) {
-	# Pull out the pubkey name from the comment,
-	# the signature, the signing date, and the secret key path.
-	if (!open (GZIP, '<', $gzip_path)) {
-	    @ERROR = ("Could not open gzip $gzip_path to verify signature. $!\n");
-	    return undef;
+	# Check comment details in header. Used to do this with manual examination of gzip header.
+	# Format is 10-byte header then the comment field which is newline-separated values which
+	# are:
+	# untrusted comment: verify with <pubkey>.pub
+	# <digital signature>
+	# date=yyyy-mm-ddThh:mm:ssZ
+	# key=<path>.sec [now changed to be basename.sec, no path]
+	# Now using IO::Uncompress::Gunzip and not being concerned about field order, which is
+	# slightly redundant with _gzip_uncompress later.
+	my $gzip_fh = IO::Uncompress::Gunzip->new ($gzip_path) or
+	    do { @ERROR = ("Could not open gzip $gzip_path to verify signature. $!\n"); return undef; };
+	my $hdrinfo = $gzip_fh->getHeaderInfo;
+	if ($hdrinfo && defined ($hdrinfo->{Comment})) {
+	    for my $line (split (/\n/, $hdrinfo->{Comment})) {
+		$sig_comment = $line if $line =~ /untrusted comment:/;
+		$sig_date = $1 if ($line =~ /^date=(.*)$/);
+		$secret_key_path = $1 if ($line =~ /^key=(.*)$/);
+	    }
 	}
-	seek (GZIP, 0, 10); # skip 10-byte header
-	$sig_comment = <GZIP>; # "untrusted comment: verify with <pubkey>.pub"
-	$signature = <GZIP>; # <digital signature>
-	$sig_date = <GZIP>; # "date=yyyy-mm-ddThh:mm:ssZ"
-	$sig_key = <GZIP>; # "key=<path>.sec"
-	close (GZIP);
+	$gzip_fh->close;
 
+	# Do a few checks on header contents.
 	if ($sig_comment =~ /untrusted comment: verify with ([\w\.-]+)/) {
 	    $sig_public_key_file = $1;
 
@@ -336,11 +356,13 @@ sub verify_gzip {
 		return undef;
 	    }
 	
-	    if ($sig_key =~ /key=(.*)$/) {
-		$secret_key_path = $1;
+	    if (!defined ($secret_key_path)) {
+		@ERROR = ("gzip header: no key path found\n");
+		return undef;
 	    }
-	    else {
-		@ERROR = ("gzip header: no key path where expected, found \"$sig_key\"\n");
+
+	    if (!defined ($sig_date)) {
+		@ERROR = ("gzip header: no signature date found\n");
 		return undef;
 	    }
 
@@ -518,10 +540,10 @@ sub _gzip_uncompress {
     my ($file) = @_;
     my ($signer, $signdate);
 
-    my $fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1);
-    my $h = $fh->getHeaderInfo;
-    if ($h) {
-	for my $line (split /\n/, $h->{Comment}) {
+    my $gzip_fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1);
+    my $hdrinfo = $gzip_fh->getHeaderInfo;
+    if ($hdrinfo && defined ($hdrinfo->{Comment})) {
+	for my $line (split /\n/, $hdrinfo->{Comment}) {
 	    if ($line =~ m/^key=(.*)$/) {
 		$signer = $1;
 	    }
@@ -531,10 +553,10 @@ sub _gzip_uncompress {
 	}
     }
     else { # not a gzip header
-	$fh->close;
+	$gzip_fh->close;
 	return undef;
     }
-    $fh->close;
+    $gzip_fh->close;
     return ($signer, $signdate);
 }
 
@@ -544,4 +566,3 @@ sub signify_error {
 
 # Module return value. Make sure module returns true.
 1;
-
