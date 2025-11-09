@@ -13,6 +13,9 @@
 # Modified 22 October 2025 by Jim Lippard to accept either "/etc/signify"
 #    or  "./" as a key directory since it is no longer set by pkg_sign
 #    as of OpenBSD 7.8.
+# Modified 8 November 2025 by Jim Lippard to avoid shell on file opens,
+#    use chomp instead of chop, use randomly named temp files instead
+#    of static names for gzip handling.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -28,17 +31,19 @@ require 5.003;
 use Exporter ();
 
 use strict;
+use warnings;
 use vars qw(@ERROR @EXPORT @EXPORT_OK @ISA $SIGNIFY_PATH $SIGNIFY_KEY_DIR $ALT_KEY_DIR $VERSION);
 
 use File::Basename qw(fileparse);
 use File::Copy qw(copy cp);
+use File::Temp qw(tempfile);
 use IO::Uncompress::Gunzip;
 
 @ISA = qw(Exporter);
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.0e';
+$VERSION = '1.1';
 
 # Global variables.
 
@@ -105,7 +110,7 @@ sub sign {
     }
 
     # Sign.
-    if (open (SIGSIGN, '|-', "$SIGNIFY_PATH -S -s $secret_key_path -m $file_path")) {
+    if (open (SIGSIGN, '|-', $SIGNIFY_PATH, '-S', '-s', $secret_key_path, '-m', $file_path)) {
 	print SIGSIGN "$signify_passphrase\n";
 	close (SIGSIGN);
     }
@@ -167,7 +172,7 @@ sub verify {
 
     # Verify.
     $result = `$SIGNIFY_PATH -V -p $public_key_path -m $file_path 2>&1`;
-    chop ($result);
+    chomp ($result);
     if ($?) {
 	@ERROR = ("signature not verified: $result\n");
 	return undef;
@@ -197,6 +202,7 @@ sub verify {
 sub sign_gzip {
     my ($gzip_path, $signify_passphrase, $secret_key_path, $temp_dir,
 	$skip_signify_check, $skip_prechecks) = @_;
+    my ($temp_file, $tempfh);
 
     if (!$skip_signify_check) {
 	# Need signify.
@@ -226,8 +232,12 @@ sub sign_gzip {
 	}
     }
 
+    # Random filename.
+    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', SUFFIX => '.tgz', DIR => $temp_dir);
+    close ($tempfh);
+
     # Sign the gzip.
-    if (!open (SIGNIFYPIPE, '|-', "$SIGNIFY_PATH -Sz -s $secret_key_path -m $gzip_path -x $temp_dir/out.tgz")) {
+    if (!open (SIGNIFYPIPE, '|-', $SIGNIFY_PATH, '-Sz', '-s', $secret_key_path, '-m', $gzip_path, '-x', "$temp_dir/$temp_file")) {
 	@ERROR = ("failed to sign gzip $gzip_path. $!\n");
 	return undef;
     }
@@ -235,16 +245,16 @@ sub sign_gzip {
     close (SIGNIFYPIPE);
 
     # If zero-length, return error and don't overwrite original.
-    if (-z "$temp_dir/out.tgz") {
+    if (-z "$temp_dir/$temp_file") {
 	@ERROR = ("error signing gzip $gzip_path. Zero-length output.\n");
 	return undef;
     }
     
     # Copy signed temp file over original.
-    copy ("$temp_dir/out.tgz", $gzip_path);
+    copy ("$temp_dir/$temp_file", $gzip_path);
 
     # Remove temp file.
-    unlink ("$temp_dir/out.tgz");
+    unlink ("$temp_dir/$temp_file");
 }
 
 # Verify that a gzipped tar file is signed.
@@ -429,21 +439,26 @@ sub verify_gzip {
 #       send error message to STDERR)
 sub _verify_gzip_signature {
     my ($file, $temp_dir) = @_;
-    my ($verified, $errmsg, $signer, $signdate);
+    my ($verified, $errmsg, $signer, $signdate,
+	$temp_file, $tempfh);
 
     $verified = 0;
 
     return ($verified, 'no file') if (!-e $file);
+
+    # Get random filename for returning error from child.
+    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', DIR => $temp_dir);
+    close ($tempfh);
 
     # Open write pipe to child process.
     my $pid = open (my $fh, '-|');
     if ($pid) { # parent
 	($signer, $signdate) = &_gzip_uncompress ($file, $fh);
 	close ($fh);
-	if (open (FILE, '<', "$temp_dir/$file.err")) {
+	if (open (FILE, '<', "$temp_dir/$temp_file")) {
 	    $errmsg = <FILE>;
 	    close (FILE);
-	    unlink ("$temp_dir/$file.err");
+	    unlink ("$temp_dir/$temp_file");
 	    if ($errmsg =~ /signify: unsigned gzip archive/) {
 		$errmsg = 'unsigned gzip archive';
 	    }
@@ -458,7 +473,7 @@ sub _verify_gzip_signature {
 	    }
 	    else {
 		# other possibilities?
-		chop ($errmsg);
+		chomp ($errmsg);
 	    }
 	}
 	else { # no error msg file
@@ -491,7 +506,7 @@ sub _verify_gzip_signature {
     }
     else { # child
 	# Send STDERR to temp file for retrieval by parent.
-	open (STDERR, '>', "$temp_dir/$file.err");
+	open (STDERR, '>', "$temp_dir/$temp_file");
 	# Run signify on the gzip file stream.
 	exec ($SIGNIFY_PATH, '-zV', '-x', $file) or die "Could not exec $SIGNIFY_PATH. $!\n";
     }
