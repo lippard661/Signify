@@ -39,7 +39,7 @@ use strict;
 use warnings;
 use vars qw(@ERROR @EXPORT @EXPORT_OK @ISA $SIGNIFY_PATH $SIGNIFY_KEY_DIR $ALT_KEY_DIR $VERSION);
 
-use File::Basename qw(fileparse basename);
+use File::Basename qw(fileparse basename dirname);
 use File::Copy qw(copy cp);
 use File::Temp qw(tempfile);
 use IO::Uncompress::Gunzip;
