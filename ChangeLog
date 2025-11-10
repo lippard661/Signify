@@ -11,3 +11,4 @@
 	files in gzip handling.
 1.1a: Remove use of backticks with IPC::Open3 and no longer manually parse
 	gzip header or depend on comment field order.
+1.1b: Fix tempfile handling, broken gzip verification, and minor issues.

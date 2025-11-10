@@ -18,6 +18,8 @@
 #    of static names for gzip handling, remove use of backticks with
 #    IPC::Open3, examine gzip header with IO::Uncompress::Gunzip instead
 #    of manually and avoid dependence on comment field order.
+# Modified 9 November 2025 by Jim Lippard to fix tempfile handling, fix
+#    broken gzip verification, and some other lesser issues.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -26,6 +28,7 @@
 # unveil: /usr/bin/signify rx,
 #    if using prechecks: pubkey (or dir) r, file r, sigfile r
 # temp_dir rwc for gzip_verify and gzip_sign
+# /dev/null rwc for gzip_verify
 
 package Signify;
 require 5.003;
@@ -47,7 +50,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1a';
+$VERSION = '1.1b';
 
 # Global variables.
 
@@ -94,16 +97,19 @@ sub sign {
 	}
 
 	# Need signature file to be writeable or nonexistent.
-	# This doesn't catch "permission denied" to create,
-	# not a missing directory in the path, which the signify
+	# This previously didn't catch "permission denied" to create,
+	# nor a missing directory in the path, which the signify
 	# command execution will. No $! set.
 	# !-w alone will return $! as either Permission denied
 	# or No such file or directory (which doesn't distinguish
 	# between directory or file), and will not account for
 	# immutable flags.
-	if (!-w "$file_path.sig" && -e "$file_path.sig") {
-	    @ERROR = ("cannot write signature file $file_path.sig.\n");
-	    return undef;
+	if (-e "$file_path.sig") {
+	    unless (-w "$file_path.sig") { @ERROR = ("cannot write signature file $file_path.sig\n"); return undef; }
+	}
+	else { # check dir exists and is writeable
+	    my $dir = dirname ($file_path);
+	    unless (-d $dir && -w $dir) { @ERROR = ("cannot create signature file in directory dir\n"); return undef; }
 	}
 
 	# Need private key.
@@ -136,6 +142,7 @@ sub sign {
 # no readable file $file_path. $!
 # no readable signature file $file_path.sig. $!
 # no readable public key $public_key_path. $!
+# failed to exec signify $@
 # Post-signify errors:
 # signature not verified: $errmsg
 # unexpected signature result, signature not verified. $result
@@ -175,7 +182,11 @@ sub verify {
 
     # Verify.
     my $err = gensym;
-    my $pid = open3 (undef, my $out, $err, $SIGNIFY_PATH, '-V', '-p', $public_key_path, '-m', $file_path);
+    my ($pid, $out);
+    eval {
+	$pid = open3 (undef, $out, $err, $SIGNIFY_PATH, '-V', '-p', $public_key_path, '-m', $file_path);
+    };
+    if ($@) { @ERROR = ("failed to exec signify: $@"); return undef; }
     my $outstr = do { local $/; <$out> // '' };
     my $errstr = do { local $/; <$err> // '' };
     waitpid ($pid, 0);
@@ -247,7 +258,7 @@ sub sign_gzip {
     close ($tempfh);
 
     # Sign the gzip.
-    if (!open (SIGNIFYPIPE, '|-', $SIGNIFY_PATH, '-Sz', '-s', $secret_key_path, '-m', $gzip_path, '-x', "$temp_dir/$temp_file")) {
+    if (!open (SIGNIFYPIPE, '|-', $SIGNIFY_PATH, '-Sz', '-s', $secret_key_path, '-m', $gzip_path, '-x', "$temp_file")) {
 	@ERROR = ("failed to sign gzip $gzip_path. $!\n");
 	return undef;
     }
@@ -255,16 +266,15 @@ sub sign_gzip {
     close (SIGNIFYPIPE);
 
     # If zero-length, return error and don't overwrite original.
-    if (-z "$temp_dir/$temp_file") {
+    if (-z "$temp_file") {
 	@ERROR = ("error signing gzip $gzip_path. Zero-length output.\n");
 	return undef;
     }
     
     # Copy signed temp file over original.
-    copy ("$temp_dir/$temp_file", $gzip_path);
+    copy ("$temp_file", $gzip_path);
 
-    # Remove temp file.
-    unlink ("$temp_dir/$temp_file");
+    # $temp_file is removed automatically.
 }
 
 # Verify that a gzipped tar file is signed.
@@ -347,7 +357,11 @@ sub verify_gzip {
 	$gzip_fh->close;
 
 	# Do a few checks on header contents.
-	if ($sig_comment =~ /untrusted comment: verify with ([\w\.-]+)/) {
+	if (!defined ($sig_comment)) {
+	    @ERROR = ("gzip header: no signify comment found\n");
+	    return undef;
+	}
+	elsif ($sig_comment =~ /untrusted comment: verify with ([\w\.-]+)/) {
 	    $sig_public_key_file = $1;
 
 	    if (defined ($require_public_key_file) &&
@@ -382,61 +396,54 @@ sub verify_gzip {
 		}
 	    }
 	}
-
-	($verified, $errmsg, $signer, $signdate) = &_verify_gzip_signature ($gzip_path, $temp_dir);
-
-	if (!$verified) {
-	    @ERROR = ("signature not verified: $errmsg\n");
-	    return undef;
-	}
-
-	# Check again to make sure signer matches the comment in gzip header.
-	($signer_secret_key_file, $signer_secret_key_dir) = fileparse ($signer);
-
-	if (!$skip_prechecks) {
-	    if ($signer_secret_key_dir ne $secret_key_dir) {
-		@ERROR = ("signify verified: key directory in gzip header is \"$secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
-		return undef;
-	    }
-	    if ($signer_secret_key_file ne $secret_key_file) {
-		@ERROR = ("signify verified: key file in gzip header is \"$secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
-		return undef;
-	    }
-	}
-
-	# Signer must match required.
-	if (defined ($require_secret_key_path)) {
-	    if ($signer_secret_key_dir ne $require_secret_key_dir &&
-		$signer_secret_key_dir ne $SIGNIFY_KEY_DIR &&
-		$signer_secret_key_dir ne $ALT_KEY_DIR) {
-		@ERROR = ("signify verified: required key directory is \"$require_secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
-		return undef;
-	    }
-	    if ($signer_secret_key_file ne $require_secret_key_file) {
-		@ERROR = ("signify verified: required key file is \"$require_secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
-		return undef;
-	    }
-	}
-
-	# So $require_public_key_file isn't a no-op if $skip_prechecks = 1
-	if (defined ($require_public_key_file) && $skip_prechecks) {
-	    my $temp_require_secret_key_file = $require_public_key_file;
-	    $temp_require_secret_key_file =~ s/\.pub$/.sec/;
-	    if ($signer_secret_key_file ne $temp_require_secret_key_file) {
-		@ERROR = ("signify verified: required public key file is \"$require_public_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
-		return undef;
-	    }
-	}
-
-
-
-	return ($signer, $signdate);
     }
 
-    # No comment found--perhaps not a gzip, not signed.
-    # This precludes some of the possible signify responses.
-    @ERROR = ("gzip header: no signify comment found\n");
-    return undef;
+    ($verified, $errmsg, $signer, $signdate) = &_verify_gzip_signature ($gzip_path, $temp_dir);
+
+    if (!$verified) {
+	@ERROR = ("signature not verified: $errmsg\n");
+	return undef;
+    }
+
+    # Check again to make sure signer matches the comment in gzip header.
+    ($signer_secret_key_file, $signer_secret_key_dir) = fileparse ($signer);
+
+    if (!$skip_prechecks) {
+	if ($signer_secret_key_dir ne $secret_key_dir) {
+	    @ERROR = ("signify verified: key directory in gzip header is \"$secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
+	    return undef;
+	}
+	if ($signer_secret_key_file ne $secret_key_file) {
+	    @ERROR = ("signify verified: key file in gzip header is \"$secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+	    return undef;
+	}
+    }
+
+    # Signer must match required.
+    if (defined ($require_secret_key_path)) {
+	if ($signer_secret_key_dir ne $require_secret_key_dir &&
+	    $signer_secret_key_dir ne $SIGNIFY_KEY_DIR &&
+	    $signer_secret_key_dir ne $ALT_KEY_DIR) {
+	    @ERROR = ("signify verified: required key directory is \"$require_secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
+	    return undef;
+	}
+	if ($signer_secret_key_file ne $require_secret_key_file) {
+	    @ERROR = ("signify verified: required key file is \"$require_secret_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+	    return undef;
+	}
+    }
+
+    # So $require_public_key_file isn't a no-op if $skip_prechecks = 1
+    if (defined ($require_public_key_file) && $skip_prechecks) {
+	my $temp_require_secret_key_file = $require_public_key_file;
+	$temp_require_secret_key_file =~ s/\.pub$/.sec/;
+	if ($signer_secret_key_file ne $temp_require_secret_key_file) {
+	    @ERROR = ("signify verified: required public key file is \"$require_public_key_file\" but actual signing key file is \"$signer_secret_key_file\"\n");
+	    return undef;
+	}
+    }
+
+    return ($signer, $signdate);
 }
 
 # Subroutine originally from distribute.pl and install.pl which had to
@@ -452,6 +459,7 @@ sub verify_gzip {
 #    if not verified)
 # $errmsg is undefined if verified, otherwise:
 #    "no file" (if file doesn't exist)
+#    "no public key: <keyname>" (if signing key's public key not on system)
 #    "unsigned gzip archive" (if a gzip but not signed)
 #    "gzheader truncated" (if gzip malformed)
 #    "not a gzip" (if doesn't have gzip header)
@@ -462,25 +470,59 @@ sub verify_gzip {
 sub _verify_gzip_signature {
     my ($file, $temp_dir) = @_;
     my ($verified, $errmsg, $signer, $signdate,
-	$temp_file, $tempfh);
+	$signer_pubkey,
+	$temp_file, $tempfh,
+	$errfile_opened);
+    my $buffsize = 2 * 1024 * 1024;
 
     $verified = 0;
+    $errfile_opened = 0;
 
     return ($verified, 'no file') if (!-e $file);
 
     # Get random filename for returning error from child.
-    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', DIR => $temp_dir);
+    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', DIR => $temp_dir, UNLINK => 0);
     close ($tempfh);
 
-    # Open write pipe to child process.
-    my $pid = open (my $fh, '-|');
+    # Get signer from gzip header.
+    ($signer, $signdate) = &_gzip_uncompress ($file);
+    $signer_pubkey = $signer;
+    $signer_pubkey =~ s/\.sec$/\.pub/;
+    $signer_pubkey = basename ($signer_pubkey) if ($signer_pubkey =~ /\//);
+
+    if (!-e "$SIGNIFY_KEY_DIR/$signer_pubkey") {
+	$errmsg = "no public key $signer_pubkey";
+	return ($verified, $errmsg, $signer, $signdate);
+    }
+
+    # Open read/write pipe.
+    pipe (my $readfh, my $writefh) or die "pipe failed: $!\n";
+    my $pid = fork();
+    if (!defined ($pid)) {
+	die "fork failed: $!\n";
+    }
     if ($pid) { # parent
-	($signer, $signdate) = &_gzip_uncompress ($file, $fh);
-	close ($fh);
-	if (open (FILE, '<', "$temp_dir/$temp_file")) {
-	    $errmsg = <FILE>;
-	    close (FILE);
-	    unlink ("$temp_dir/$temp_file");
+	close ($readfh); # won't read from pipe
+	
+	# Send gzip to child.
+	open (my $gzfh, '<', $file) or
+	    do { $errmsg = "could not open gzip $file. $!";
+		 return ($verified, $errmsg, $signer, $signdate); };
+	binmode ($gzfh);
+	while (read ($gzfh, my $buf, $buffsize)) {
+	    print $writefh $buf or last;
+	}
+	close ($gzfh);
+	close ($writefh);
+
+	waitpid ($pid, 0);
+
+	# Check child's error output, then child exit status.
+	if (open (my $errfile, '<', $temp_file)) {
+	    $errfile_opened = 1;
+	    $errmsg = do { local $/; <$errfile>; };
+	    close ($errfile);
+	    unlink ($temp_file);
 	    if ($errmsg =~ /signify: unsigned gzip archive/) {
 		$errmsg = 'unsigned gzip archive';
 	    }
@@ -493,12 +535,8 @@ sub _verify_gzip_signature {
 	    elsif ($errmsg =~ /signify: signature mismatch/) {
 		$errmsg = 'signature mismatch';
 	    }
-	    else {
-		# other possibilities?
-		chomp ($errmsg);
-	    }
 	}
-	else { # no error msg file
+	if (!$errfile_opened || $errmsg eq '') {
 	    # $? has child exit status, need to shift right 8 bits
 	    # $? & 127 is signal number for child termination
 	    # $? & 128 is 1 if core dumped
@@ -527,17 +565,25 @@ sub _verify_gzip_signature {
 	return ($verified, $errmsg, $signer, $signdate);
     }
     else { # child
+	# Close write side of pipe.
+	close ($writefh);
+	# Open STDIN from read side of pipe and close readfh.
+	open (STDIN, '<&', $readfh) or die "dup2 filed: $!\n";
+	close ($readfh);
 	# Send STDERR to temp file for retrieval by parent.
-	open (STDERR, '>', "$temp_dir/$temp_file");
+	open (STDERR, '>', $temp_file);
+	# Send STDOUT to /dev/null.
+	open (STDOUT, '>', '/dev/null');
 	# Run signify on the gzip file stream.
-	exec ($SIGNIFY_PATH, '-zV', '-x', $file) or die "Could not exec $SIGNIFY_PATH. $!\n";
+	exec ($SIGNIFY_PATH, '-zV', '-p', "$SIGNIFY_KEY_DIR/$signer_pubkey") or die "Could not exec $SIGNIFY_PATH. $!\n";
+	# exec doesn't return.
     }
 }
 
 # Subroutine to uncompress a gzip file after first examining the header.
 # Borrowed from OpenBSD::PackageRepository.pm, more or less--stripped down.
 sub _gzip_uncompress {
-    my ($file) = @_;
+    my ($file, $outfh) = @_;
     my ($signer, $signdate);
 
     my $gzip_fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1);
