@@ -39,7 +39,7 @@ use strict;
 use warnings;
 use vars qw(@ERROR @EXPORT @EXPORT_OK @ISA $SIGNIFY_PATH $SIGNIFY_KEY_DIR $ALT_KEY_DIR $VERSION);
 
-use File::Basename qw(fileparse);
+use File::Basename qw(fileparse basename);
 use File::Copy qw(copy cp);
 use File::Temp qw(tempfile);
 use IO::Uncompress::Gunzip;
@@ -50,7 +50,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1b';
+$VERSION = '1.1c';
 
 # Global variables.
 
@@ -281,19 +281,27 @@ sub sign_gzip {
 # Arguments after $temp_dir are optional.
 # Can require a specific public key file name or specific secret key
 # pathname in the comment. Can optionally skip check for signify.
+# Specified public key and secret key names must match each other and
+# the key name in the gzip header comment (which must match the private
+# key name). If not specified, the gzip header key file name, but
+# with .pub, is looked for in /etc/sigtree, and that's the only actual
+# verification that will be attempted.
 # (Don't presently offer a way to skip the other pre- and post-checks.)
 # Returns signer and date.
 # Possible errors:
 # Pre-signify:
 # no executable $SIGNIFY_PATH. $!
+# mismatch of required public key and secret key filenames.
 # Manual gzip review:
 # Could not open gzip $gzip_path to verify signature. $!
+# no gzip header found
 # gzip header: no signify comment found
 # gzip header: untrusted comment public key is "$sig_public_key_file" but required is "$require_public_key_file"
 # gzip header: no key path found
 # gzip header: no signature date found
 # gzip header: key directory in comment is "$secret_key_dir" but required is "$require_secret_key_dir"
 # gzip header: key file in comment is "$secret_key_file" but required is "$require_secret_key_file"
+# gzip header: mismatch of public key and secret key filenames. [only in precheck]
 # Execution errors from signify (via _verify_gzip_signature, see below):
 # signature not verified: $errmsg
 #   (specific $errmsg possibilities documented on _verify_gzip_signature)
@@ -325,7 +333,20 @@ sub verify_gzip {
     }
 
     # Might need even if $skip_prechecks.
-    ($require_secret_key_file, $require_secret_key_dir) = fileparse ($require_secret_key_path) if (defined ($require_secret_key_path));
+    if (defined ($require_secret_key_path)) {
+	($require_secret_key_file, $require_secret_key_dir) = fileparse ($require_secret_key_path);
+	# Can't have mismatch.
+	if (defined ($require_public_key_file)) {
+	    my $pubkey = $require_public_key_file;
+	    $pubkey =~ s/\.pub$//;
+	    my $seckey = $require_secret_key_file;
+	    $seckey =~ s/\.sec$//;
+	    if ($pubkey ne $seckey) {
+		@ERROR = ('mismatch of required public key and secret key filenames.\n');
+		return undef;
+	    }
+	}
+    }
 
     # This pre-checking precludes some of the issues that might come up
     # in _verify_gzip_signature or from signify itself, though those
@@ -357,7 +378,11 @@ sub verify_gzip {
 	$gzip_fh->close;
 
 	# Do a few checks on header contents.
-	if (!defined ($sig_comment)) {
+	if (!defined ($hdrinfo)) {
+	    @ERROR = ("no gzip header found\n");
+	    return undef;
+	}
+	elsif (!defined ($sig_comment)) {
 	    @ERROR = ("gzip header: no signify comment found\n");
 	    return undef;
 	}
@@ -383,8 +408,19 @@ sub verify_gzip {
 	    # Used later whether or not require_secret_key_path is used.
 	    ($secret_key_file, $secret_key_dir) = fileparse ($secret_key_path); # from gzip header
 
+	    # Mismatch of gzip header public and secret file names.
+	    my $gzip_pubkey = $sig_public_key_file;
+	    $gzip_pubkey =~ s/\.pub$//;
+	    my $gzip_seckey = $secret_key_file;
+	    $gzip_seckey =~ s/\.sec$//;
+	    if ($gzip_pubkey ne $gzip_seckey) {
+		@ERROR = ('gzip header: mismatch of public key and secret key filenames.\n');
+		return undef;
+	    }
+
 	    if (defined ($require_secret_key_path)) {
-		if ($secret_key_dir ne $require_secret_key_dir &&
+		if ($require_secret_key_dir ne $ALT_KEY_DIR &&
+		    $secret_key_dir ne $require_secret_key_dir &&
 		    $secret_key_dir ne $SIGNIFY_KEY_DIR &&
 		    $secret_key_dir ne $ALT_KEY_DIR) {
 		    @ERROR = ("gzip header: key directory in comment is \"$secret_key_dir\" but required is \"$require_secret_key_dir\"\n");
@@ -407,9 +443,12 @@ sub verify_gzip {
 
     # Check again to make sure signer matches the comment in gzip header.
     ($signer_secret_key_file, $signer_secret_key_dir) = fileparse ($signer);
-
+    
     if (!$skip_prechecks) {
-	if ($signer_secret_key_dir ne $secret_key_dir) {
+	if ($secret_key_dir ne $ALT_KEY_DIR &&
+	    $signer_secret_key_dir ne $secret_key_dir &&
+	    $signer_secret_key_dir ne $SIGNIFY_KEY_DIR &&
+	    $signer_secret_key_dir ne $ALT_KEY_DIR) {
 	    @ERROR = ("signify verified: key directory in gzip header is \"$secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
 	    return undef;
 	}
@@ -421,7 +460,8 @@ sub verify_gzip {
 
     # Signer must match required.
     if (defined ($require_secret_key_path)) {
-	if ($signer_secret_key_dir ne $require_secret_key_dir &&
+	if ($require_secret_key_dir ne $ALT_KEY_DIR &&
+	    $signer_secret_key_dir ne $require_secret_key_dir &&
 	    $signer_secret_key_dir ne $SIGNIFY_KEY_DIR &&
 	    $signer_secret_key_dir ne $ALT_KEY_DIR) {
 	    @ERROR = ("signify verified: required key directory is \"$require_secret_key_dir\" but actual signing key directory is \"$signer_secret_key_dir\"\n");
@@ -452,7 +492,8 @@ sub verify_gzip {
 # Now relies on underlying verify_gzip_signature and gzip_uncompress.
 
 # Subroutine to verify signify signature on a gzip archive.
-# Input: existing temp dir and filename of gzip archive.
+# Input: existing temp dir and filename of gzip archive. (Ignores required
+# key fields, those are just pre-checks.)
 # Return values: $verified (0=no, 1=yes), $msg, $signer, $signdate
 # $signer and $signdate are undefined if not verified (currently
 #    it will return any signer or signdate found in gzip header even
@@ -462,7 +503,7 @@ sub verify_gzip {
 #    "no public key: <keyname>" (if signing key's public key not on system)
 #    "unsigned gzip archive" (if a gzip but not signed)
 #    "gzheader truncated" (if gzip malformed)
-#    "not a gzip" (if doesn't have gzip header)
+#    "no gzip header found" (if doesn't have gzip header)
 #    "bad signature" (signature parse error or wrong sig, signify will produce specific error)
 #    "signature mismatch" (good sig/key but bad data, signify will produce error)
 #    "no exec of signify" (if child exec of signify fails, will also
@@ -480,20 +521,24 @@ sub _verify_gzip_signature {
 
     return ($verified, 'no file') if (!-e $file);
 
-    # Get random filename for returning error from child.
-    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', DIR => $temp_dir, UNLINK => 0);
-    close ($tempfh);
-
     # Get signer from gzip header.
-    ($signer, $signdate) = &_gzip_uncompress ($file);
+    ($signer, $signdate, $errmsg) = &_gzip_uncompress ($file);
     $signer_pubkey = $signer;
     $signer_pubkey =~ s/\.sec$/\.pub/;
     $signer_pubkey = basename ($signer_pubkey) if ($signer_pubkey =~ /\//);
+
+    if (defined ($errmsg)) {
+	return ($verified, $errmsg);
+    }
 
     if (!-e "$SIGNIFY_KEY_DIR/$signer_pubkey") {
 	$errmsg = "no public key $signer_pubkey";
 	return ($verified, $errmsg, $signer, $signdate);
     }
+
+    # Get random filename for returning error from child.
+    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', DIR => $temp_dir, UNLINK => 0);
+    close ($tempfh);
 
     # Open read/write pipe.
     pipe (my $readfh, my $writefh) or die "pipe failed: $!\n";
@@ -583,7 +628,7 @@ sub _verify_gzip_signature {
 # Subroutine to uncompress a gzip file after first examining the header.
 # Borrowed from OpenBSD::PackageRepository.pm, more or less--stripped down.
 sub _gzip_uncompress {
-    my ($file, $outfh) = @_;
+    my ($file) = @_;
     my ($signer, $signdate);
 
     my $gzip_fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1);
@@ -600,7 +645,7 @@ sub _gzip_uncompress {
     }
     else { # not a gzip header
 	$gzip_fh->close;
-	return undef;
+	return (undef, undef, 'no gzip header found');
     }
     $gzip_fh->close;
     return ($signer, $signdate);
