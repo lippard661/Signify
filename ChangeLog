@@ -13,3 +13,5 @@
 	gzip header or depend on comment field order.
 1.1b: Fix tempfile handling, broken gzip verification, and minor issues.
 1.1c: Clean up error messages and exception handling in verify_gzip.
+1.1d: Support macOS (Homebrew) location of signify and remove some but
+	not all gzip header check redundancy.

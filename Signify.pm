@@ -20,6 +20,9 @@
 #    of manually and avoid dependence on comment field order.
 # Modified 9 November 2025 by Jim Lippard to fix tempfile handling, fix
 #    broken gzip verification, and some other lesser issues.
+# Modified 11 November 2025 by Jim Lippard to support macOS location of
+#    signify (via Homebrew) and remove some but not all gzip header
+#    check redundancy.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -50,7 +53,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1c';
+$VERSION = '1.1d';
 
 # Global variables.
 
@@ -62,6 +65,9 @@ $SIGNIFY_PATH = '/usr/bin/signify';
 
 # Debian path to signify.
 $SIGNIFY_PATH = '/usr/bin/signify-openbsd' if $^O eq 'linux';
+
+# macOS path to signify.
+$SIGNIFY_PATH = '/opt/homebrew/bin/signify' if $^O eq 'darwin';
 
 # Signify keys dir.
 $SIGNIFY_KEY_DIR = '/etc/signify';
@@ -357,32 +363,14 @@ sub verify_gzip {
 
     if (!$skip_prechecks) {
 	# Check comment details in header. Used to do this with manual examination of gzip header.
-	# Format is 10-byte header then the comment field which is newline-separated values which
-	# are:
-	# untrusted comment: verify with <pubkey>.pub
-	# <digital signature>
-	# date=yyyy-mm-ddThh:mm:ssZ
-	# key=<path>.sec [now changed to be basename.sec, no path]
-	# Now using IO::Uncompress::Gunzip and not being concerned about field order, which is
-	# slightly redundant with _gzip_uncompress later.
-	my $gzip_fh = IO::Uncompress::Gunzip->new ($gzip_path) or
-	    do { @ERROR = ("Could not open gzip $gzip_path to verify signature. $!\n"); return undef; };
-	my $hdrinfo = $gzip_fh->getHeaderInfo;
-	if ($hdrinfo && defined ($hdrinfo->{Comment})) {
-	    for my $line (split (/\n/, $hdrinfo->{Comment})) {
-		$sig_comment = $line if $line =~ /untrusted comment:/;
-		$sig_date = $1 if ($line =~ /^date=(.*)$/);
-		$secret_key_path = $1 if ($line =~ /^key=(.*)$/);
-	    }
-	}
-	$gzip_fh->close;
-
-	# Do a few checks on header contents.
-	if (!defined ($hdrinfo)) {
-	    @ERROR = ("no gzip header found\n");
+	($secret_key_path, $sig_date, $sig_comment, $errmsg) = &_gzip_get_header ($gzip_path);
+	if (defined ($errmsg)) {
+	    @ERROR = ($errmsg);
 	    return undef;
 	}
-	elsif (!defined ($sig_comment)) {
+
+	# Do a few checks on header contents.
+	if (!defined ($sig_comment)) {
 	    @ERROR = ("gzip header: no signify comment found\n");
 	    return undef;
 	}
@@ -499,6 +487,7 @@ sub verify_gzip {
 #    it will return any signer or signdate found in gzip header even
 #    if not verified)
 # $errmsg is undefined if verified, otherwise:
+#    "could not open gzip <file>. <reason>"
 #    "no file" (if file doesn't exist)
 #    "no public key: <keyname>" (if signing key's public key not on system)
 #    "unsigned gzip archive" (if a gzip but not signed)
@@ -510,7 +499,7 @@ sub verify_gzip {
 #       send error message to STDERR)
 sub _verify_gzip_signature {
     my ($file, $temp_dir) = @_;
-    my ($verified, $errmsg, $signer, $signdate,
+    my ($verified, $errmsg, $signer, $signdate, $comment,
 	$signer_pubkey,
 	$temp_file, $tempfh,
 	$errfile_opened);
@@ -522,10 +511,12 @@ sub _verify_gzip_signature {
     return ($verified, 'no file') if (!-e $file);
 
     # Get signer from gzip header.
-    ($signer, $signdate, $errmsg) = &_gzip_uncompress ($file);
-    $signer_pubkey = $signer;
-    $signer_pubkey =~ s/\.sec$/\.pub/;
-    $signer_pubkey = basename ($signer_pubkey) if ($signer_pubkey =~ /\//);
+    ($signer, $signdate, $comment, $errmsg) = &_gzip_get_header ($file);
+    if (defined ($signer)) {
+	$signer_pubkey = $signer;
+	$signer_pubkey =~ s/\.sec$/\.pub/;
+	$signer_pubkey = basename ($signer_pubkey) if ($signer_pubkey =~ /\//);
+    }
 
     if (defined ($errmsg)) {
 	return ($verified, $errmsg);
@@ -554,6 +545,9 @@ sub _verify_gzip_signature {
 	    do { $errmsg = "could not open gzip $file. $!";
 		 return ($verified, $errmsg, $signer, $signdate); };
 	binmode ($gzfh);
+	# using perl i/o instead of sysread
+	# if there are opportunities to improve efficiency they might
+	# be here, this is slow (with both read and sysread).
 	while (read ($gzfh, my $buf, $buffsize)) {
 	    print $writefh $buf or last;
 	}
@@ -627,28 +621,35 @@ sub _verify_gzip_signature {
 
 # Subroutine to uncompress a gzip file after first examining the header.
 # Borrowed from OpenBSD::PackageRepository.pm, more or less--stripped down.
-sub _gzip_uncompress {
+# Returns $signer, $signdate, $comment, $errmsg.
+# gzip header format:
+# 10-byte header
+# comment field which is newline-separated values:
+# untrusted comment: verify with <pubkey>.pub
+# <digital signature>
+# date=yyyy-mm-ddThh:mm:ssZ
+# key=<path>.sec [now changed to be basename.sec, no path]
+sub _gzip_get_header {
     my ($file) = @_;
-    my ($signer, $signdate);
+    my ($signer, $signdate, $comment);
 
-    my $gzip_fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1);
+    my $gzip_fh = IO::Uncompress::Gunzip->new($file, MultiStream => 1) or
+	do { return (undef, undef, undef, "could not open gzip $file. $!"); };
+    
     my $hdrinfo = $gzip_fh->getHeaderInfo;
     if ($hdrinfo && defined ($hdrinfo->{Comment})) {
 	for my $line (split /\n/, $hdrinfo->{Comment}) {
-	    if ($line =~ m/^key=(.*)$/) {
-		$signer = $1;
-	    }
-	    elsif ($line =~ m/^date=(.*)$/) {
-		$signdate = $1;
-	    }
+	    $comment = $line if ($line =~ /untrusted comment:/);
+	    $signer = $1 if ($line =~ /^key=(.*)$/);
+	    $signdate = $1 if ($line =~ /^date=(.*)$/);
 	}
     }
     else { # not a gzip header
 	$gzip_fh->close;
-	return (undef, undef, 'no gzip header found');
+	return (undef, undef, undef, 'no gzip header found');
     }
     $gzip_fh->close;
-    return ($signer, $signdate);
+    return ($signer, $signdate, $comment, undef);
 }
 
 sub signify_error {
