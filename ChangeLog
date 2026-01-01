@@ -15,3 +15,4 @@
 1.1c: Clean up error messages and exception handling in verify_gzip.
 1.1d: Support macOS (Homebrew) location of signify and remove some but
 	not all gzip header check redundancy.
+1.1e: Properly initialize @ERROR array.

@@ -23,6 +23,8 @@
 # Modified 11 November 2025 by Jim Lippard to support macOS location of
 #    signify (via Homebrew) and remove some but not all gzip header
 #    check redundancy.
+# Modified 1 January 2026 by Jim Lippard to initialize @ERROR in each
+#    subroutine (except signify_errors).
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -53,7 +55,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1d';
+$VERSION = '1.1e';
 
 # Global variables.
 
@@ -86,6 +88,8 @@ $ALT_KEY_DIR = './';
 sub sign {
     my ($file_path, $signify_passphrase, $secret_key_path,
 	$skip_signify_check, $skip_prechecks) = @_;
+
+    @ERROR = ();
 
     if (!$skip_signify_check) {
 	# Need signify.
@@ -160,6 +164,8 @@ sub verify {
     my ($file_path, $public_key_path,
 	$skip_signify_check, $skip_prechecks) = @_;
 
+    @ERROR = ();
+
     if (!$skip_signify_check) {
 	# Need signify.
 	if (!-x $SIGNIFY_PATH) {
@@ -230,6 +236,8 @@ sub sign_gzip {
     my ($gzip_path, $signify_passphrase, $secret_key_path, $temp_dir,
 	$skip_signify_check, $skip_prechecks) = @_;
     my ($temp_file, $tempfh);
+
+    @ERROR = ();
 
     if (!$skip_signify_check) {
 	# Need signify.
@@ -329,6 +337,8 @@ sub verify_gzip {
     my ($require_secret_key_dir, $require_secret_key_file);
     my ($signer_secret_key_dir, $signer_secret_key_file);
     my ($verified, $errmsg, $signer, $signdate);
+
+    @ERROR = ();
 
     if (!$skip_signify_check) {
 	# Need signify.
