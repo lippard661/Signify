@@ -5,7 +5,6 @@ Also works on Linux with signify-openbsd package and on macOS with signify-osx (
 
 Also available at https://www.discord.org/lippard/software
 
-p5-Signify-1.1f.tgz is a Legion of Dynamic Discord signify-signed OpenBSD package. Signify public key is https://www.discord.org/lippard/software/discord.org-2025-pkg.pub
-Future releases in 2026 will be signed with https://www.discord.org/lippard/software/discord.org-2026-pkg.pub
+p5-Signify-1.1f.tgz is a Legion of Dynamic Discord signify-signed OpenBSD package. Signify public key is https://www.discord.org/lippard/software/discord.org-2026-pkg.pub
 
 Current version is Signify-1.1f of 11 January 2026.
