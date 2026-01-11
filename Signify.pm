@@ -25,6 +25,8 @@
 #    check redundancy.
 # Modified 1 January 2026 by Jim Lippard to initialize @ERROR in each
 #    subroutine (except signify_errors).
+# Modified 4 January 2026 by Jim Lippard to remove & from subroutine calls.
+# Modified 10 January 2026 by Jim Lippard to remove excess quotes.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -55,7 +57,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1e';
+$VERSION = '1.1f';
 
 # Global variables.
 
@@ -101,7 +103,7 @@ sub sign {
     
     if (!$skip_prechecks) {
 	# Need file.
-	if (!-r "$file_path") {
+	if (!-r $file_path) {
 	    @ERROR = ("no readable file $file_path. $!\n");
 	    return undef;
 	}
@@ -176,7 +178,7 @@ sub verify {
 
     if (!$skip_prechecks) {
 	# Need file and file signature.
-	if (!-r "$file_path") {
+	if (!-r $file_path) {
 	    @ERROR = ("no readable file $file_path. $!\n");
 	    return undef;
 	}
@@ -280,13 +282,13 @@ sub sign_gzip {
     close (SIGNIFYPIPE);
 
     # If zero-length, return error and don't overwrite original.
-    if (-z "$temp_file") {
+    if (-z $temp_file) {
 	@ERROR = ("error signing gzip $gzip_path. Zero-length output.\n");
 	return undef;
     }
     
     # Copy signed temp file over original.
-    copy ("$temp_file", $gzip_path);
+    copy ($temp_file, $gzip_path);
 
     # $temp_file is removed automatically.
 }
@@ -373,7 +375,7 @@ sub verify_gzip {
 
     if (!$skip_prechecks) {
 	# Check comment details in header. Used to do this with manual examination of gzip header.
-	($secret_key_path, $sig_date, $sig_comment, $errmsg) = &_gzip_get_header ($gzip_path);
+	($secret_key_path, $sig_date, $sig_comment, $errmsg) = _gzip_get_header ($gzip_path);
 	if (defined ($errmsg)) {
 	    @ERROR = ($errmsg);
 	    return undef;
@@ -432,7 +434,7 @@ sub verify_gzip {
 	}
     }
 
-    ($verified, $errmsg, $signer, $signdate) = &_verify_gzip_signature ($gzip_path, $temp_dir);
+    ($verified, $errmsg, $signer, $signdate) = _verify_gzip_signature ($gzip_path, $temp_dir);
 
     if (!$verified) {
 	@ERROR = ("signature not verified: $errmsg\n");
@@ -521,7 +523,7 @@ sub _verify_gzip_signature {
     return ($verified, 'no file') if (!-e $file);
 
     # Get signer from gzip header.
-    ($signer, $signdate, $comment, $errmsg) = &_gzip_get_header ($file);
+    ($signer, $signdate, $comment, $errmsg) = _gzip_get_header ($file);
     if (defined ($signer)) {
 	$signer_pubkey = $signer;
 	$signer_pubkey =~ s/\.sec$/\.pub/;

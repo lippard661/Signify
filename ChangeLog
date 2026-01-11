@@ -16,3 +16,4 @@
 1.1d: Support macOS (Homebrew) location of signify and remove some but
 	not all gzip header check redundancy.
 1.1e: Properly initialize @ERROR array.
+1.1f: Cosmetic changes, remove unnecessary & and ".
