@@ -27,6 +27,8 @@
 #    subroutine (except signify_errors).
 # Modified 4 January 2026 by Jim Lippard to remove & from subroutine calls.
 # Modified 10 January 2026 by Jim Lippard to remove excess quotes.
+# Modified 20 April 2026 by Jim Lippard to check copy result and return
+#    error from sign_gzip.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -57,7 +59,7 @@ use Symbol 'gensym';
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1f';
+$VERSION = '1.1g';
 
 # Global variables.
 
@@ -234,6 +236,7 @@ sub verify {
 # Post-signify errors:
 # failed to sign gzip $gzip_path. $!
 # error signing gzip $gzip_path. Zero-length output.
+# failed to copy signed gzip to $gzip_path. $!
 sub sign_gzip {
     my ($gzip_path, $signify_passphrase, $secret_key_path, $temp_dir,
 	$skip_signify_check, $skip_prechecks) = @_;
@@ -288,9 +291,13 @@ sub sign_gzip {
     }
     
     # Copy signed temp file over original.
-    copy ($temp_file, $gzip_path);
+    unless (copy ($temp_file, $gzip_path)) {
+	@ERROR = ("failed to copy signed gzip to $gzip_path. $!\n");
+	return undef;
+    }
 
     # $temp_file is removed automatically.
+    return 1;
 }
 
 # Verify that a gzipped tar file is signed.
