@@ -29,6 +29,12 @@
 # Modified 10 January 2026 by Jim Lippard to remove excess quotes.
 # Modified 20 April 2026 by Jim Lippard to check copy result and return
 #    error from sign_gzip.
+# Modified 17 May 2026 by Jim Lippard after Gemini security review to
+#    ensure tempfiles removed in early returns from _verify_gzip_signature,
+#    avoid potential IPC::Open3 deadlock in verify by merging STDOUT/STDERR,
+#    ensure tempfile removal in sign_gzip, and remove unnecessary conditional
+#    on basename call in _verify_gzip_signature. Change bareword filehandles
+#    to $fh format (except for STDOUT/STDERR).
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
@@ -53,13 +59,12 @@ use File::Copy qw(copy cp);
 use File::Temp qw(tempfile);
 use IO::Uncompress::Gunzip;
 use IPC::Open3;
-use Symbol 'gensym';
 
 @ISA = qw(Exporter);
 @EXPORT = ();
 @EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.1g';
+$VERSION = '1.2';
 
 # Global variables.
 
@@ -134,9 +139,9 @@ sub sign {
     }
 
     # Sign.
-    if (open (SIGSIGN, '|-', $SIGNIFY_PATH, '-S', '-s', $secret_key_path, '-m', $file_path)) {
-	print SIGSIGN "$signify_passphrase\n";
-	close (SIGSIGN);
+    if (open (my $sigsign_fh, '|-', $SIGNIFY_PATH, '-S', '-s', $secret_key_path, '-m', $file_path)) {
+	print $sigsign_fh "$signify_passphrase\n";
+	close ($sigsign_fh);
     }
     # Can't stop error from displaying here from signify.
     else {
@@ -197,20 +202,18 @@ sub verify {
     }
 
     # Verify.
-    my $err = gensym;
     my ($pid, $out);
     eval {
-	$pid = open3 (undef, $out, $err, $SIGNIFY_PATH, '-V', '-p', $public_key_path, '-m', $file_path);
+	# merge STDOUT/STDERR since they aren't distinguished
+	$pid = open3 (undef, $out, $out, $SIGNIFY_PATH, '-V', '-p', $public_key_path, '-m', $file_path);
     };
     if ($@) { @ERROR = ("failed to exec signify: $@"); return undef; }
     my $outstr = do { local $/; <$out> // '' };
-    my $errstr = do { local $/; <$err> // '' };
     waitpid ($pid, 0);
     my $exit = $? >> 8;
     chomp ($outstr);
-    chomp ($errstr);
     if ($exit != 0) {
-	my $msg = $errstr || $outstr;
+	my $msg = $outstr; # STDOUT and STDERR
 	@ERROR = ("signature not verified: $msg\n");
 	return undef;
     }
@@ -218,7 +221,7 @@ sub verify {
 	return 1;
     }
     else {
-	@ERROR = ("unexpected signature result, signature not verified. $outstr $errstr\n");
+	@ERROR = ("unexpected signature result, signature not verified. $outstr\n");
 	return undef;
     }
 }
@@ -273,16 +276,17 @@ sub sign_gzip {
     }
 
     # Random filename.
-    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', SUFFIX => '.tgz', DIR => $temp_dir);
+    ($tempfh, $temp_file) = tempfile ('signify.XXXXXXXX', SUFFIX => '.tgz', DIR => $temp_dir, UNLINK => 1);
     close ($tempfh);
 
     # Sign the gzip.
-    if (!open (SIGNIFYPIPE, '|-', $SIGNIFY_PATH, '-Sz', '-s', $secret_key_path, '-m', $gzip_path, '-x', "$temp_file")) {
+    my $signifypipe_fh;
+    if (!open ($signifypipe_fh, '|-', $SIGNIFY_PATH, '-Sz', '-s', $secret_key_path, '-m', $gzip_path, '-x', "$temp_file")) {
 	@ERROR = ("failed to sign gzip $gzip_path. $!\n");
 	return undef;
     }
-    print SIGNIFYPIPE "$signify_passphrase\n";
-    close (SIGNIFYPIPE);
+    print $signifypipe_fh "$signify_passphrase\n";
+    close ($signifypipe_fh);
 
     # If zero-length, return error and don't overwrite original.
     if (-z $temp_file) {
@@ -534,7 +538,7 @@ sub _verify_gzip_signature {
     if (defined ($signer)) {
 	$signer_pubkey = $signer;
 	$signer_pubkey =~ s/\.sec$/\.pub/;
-	$signer_pubkey = basename ($signer_pubkey) if ($signer_pubkey =~ /\//);
+	$signer_pubkey = basename ($signer_pubkey);
     }
 
     if (defined ($errmsg)) {
@@ -551,9 +555,13 @@ sub _verify_gzip_signature {
     close ($tempfh);
 
     # Open read/write pipe.
-    pipe (my $readfh, my $writefh) or die "pipe failed: $!\n";
+    pipe (my $readfh, my $writefh) or do {
+	unlink ($temp_file);
+	die "pipe failed: $!\n";
+    };
     my $pid = fork();
     if (!defined ($pid)) {
+	unlink ($temp_file);
 	die "fork failed: $!\n";
     }
     if ($pid) { # parent
@@ -562,6 +570,7 @@ sub _verify_gzip_signature {
 	# Send gzip to child.
 	open (my $gzfh, '<', $file) or
 	    do { $errmsg = "could not open gzip $file. $!";
+		 unlink ($temp_file);
 		 return ($verified, $errmsg, $signer, $signdate); };
 	binmode ($gzfh);
 	# using perl i/o instead of sysread

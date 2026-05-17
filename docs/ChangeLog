@@ -17,3 +17,7 @@
 	not all gzip header check redundancy.
 1.1e: Properly initialize @ERROR array.
 1.1f: Cosmetic changes, remove unnecessary & and ".
+1.1g: Check for error on copy at and of sign_gzip.
+1.2: Clean up orphaned tempfile paths, potential IPC::Open3 deadlock,
+	unnecessary conditional on basename call, stop using bareword
+	filehandles.
