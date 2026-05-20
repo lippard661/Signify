@@ -85,7 +85,6 @@ on all three. If using another platform it may need to be installed via CPAN.
 If your script uses OpenBSD::Pledge and OpenBSD::Unveil, Signify.pm requires:
 ```
 pledge: stdio rpath proc exec unveil
-        tmppath     (for verify_gzip and sign_gzip)
 unveil: /usr/bin/signify rx
         pubkey r, file r, sigfile r    (if using prechecks)
         temp_dir rwc                   (for verify_gzip and sign_gzip)
@@ -97,7 +96,7 @@ unveil: /usr/bin/signify rx
 No symbols are exported by default. Import what you need:
 
 ```perl
-use Signify qw(sign verify sign_gzip verify_gzip signify_error);
+use Signify qw(get_gzip_signer sign verify sign_gzip verify_gzip signify_error);
 ```
 
 Or access via full package name:
@@ -174,6 +173,19 @@ Returns 1 on success, undef on error.
 - `$temp_dir` — writable directory for temporary files during signing
 - `$skip_signify_check` — skip check that signify binary exists (optional)
 - `$skip_prechecks` — skip checks for file/key readability (optional)
+
+---
+
+### get_gzip_signer
+
+```perl
+my ($signer) = get_gzip_signer($gzip_path);
+```
+
+Obtains the signer from a gzip for use before verification.
+
+**Parameters**:
+- `$gzip_path` — path to `.tgz` file to verify
 
 ---
 

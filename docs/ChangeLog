@@ -21,3 +21,4 @@
 1.2: Clean up orphaned tempfile paths, potential IPC::Open3 deadlock,
 	unnecessary conditional on basename call, stop using bareword
 	filehandles.
+1.2a: Add get_gzip_signer.

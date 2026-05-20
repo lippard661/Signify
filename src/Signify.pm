@@ -35,11 +35,11 @@
 #    ensure tempfile removal in sign_gzip, and remove unnecessary conditional
 #    on basename call in _verify_gzip_signature. Change bareword filehandles
 #    to $fh format (except for STDOUT/STDERR).
+# Modified 19 May 2026 by Jim Lippard to add get_gzip_signer.
 
 # If using OpenBSD::Pledge and OpenBSD::Unveil, the following are
 # required:
 # pledge: stdio, rpath, proc, exec, unveil
-#    tmppath for gzip_verify
 # unveil: /usr/bin/signify rx,
 #    if using prechecks: pubkey (or dir) r, file r, sigfile r
 # temp_dir rwc for gzip_verify and gzip_sign
@@ -62,9 +62,9 @@ use IPC::Open3;
 
 @ISA = qw(Exporter);
 @EXPORT = ();
-@EXPORT_OK = qw(sign sign_gzip verify verify_gzip signify_error);
+@EXPORT_OK = qw(get_gzip_signer sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.2';
+$VERSION = '1.2a';
 
 # Global variables.
 
@@ -302,6 +302,18 @@ sub sign_gzip {
 
     # $temp_file is removed automatically.
     return 1;
+}
+
+# Return the signer key name from a gzip header without streaming or
+# verifying the file. Used to check which key was used for signing
+# before deciding whether to call verify_gzip, avoiding an unnecessary
+# full stream of the file if the key is not acceptable.
+# Returns the signer secret key path (or basename) from the gzip header,
+# or undef if the header cannot be read or has no key field.
+sub get_gzip_signer {
+    my ($gzip_path) = @_;
+    my ($signer, $signdate, $comment, $errmsg) = _gzip_get_header ($gzip_path);
+    return $signer;
 }
 
 # Verify that a gzipped tar file is signed.
