@@ -67,7 +67,7 @@ cp src/Signify.pm /opt/homebrew/lib/perl5/site_perl/
 
 - **OpenBSD**: signify at `/usr/bin/signify` (standard)
 - **Linux**: `apt install signify-openbsd`; installed at `/usr/bin/signify-openbsd`
-- **macOS**: `brew install signify`; installed at `/opt/homebrew/bin/signify`
+- **macOS**: `brew install signify-osx`; installed at `/opt/homebrew/bin/signify`
   (Apple Silicon). On Intel Macs, Homebrew installs to `/usr/local/bin/signify`;
   set `$Signify::SIGNIFY_PATH` accordingly if needed.
 
