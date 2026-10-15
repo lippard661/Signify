@@ -22,3 +22,21 @@
 	unnecessary conditional on basename call, stop using bareword
 	filehandles.
 1.2a: Add get_gzip_signer.
+1.3: Fix bugs and add named parameter form.
+	Bugs: _verify_gzip_signature ignores SIGPIPE in the parent while
+	streaming, so a tampered or wrong-key package no longer kills the
+	caller; treats signify killed by a signal (or a failed waitpid) as
+	not verified instead of verified; the forked child reports
+	exec/dup failures and leaves with POSIX::_exit instead of die, so
+	the caller's END blocks and code never run in the child; rejects a
+	gzip header with no usable key name. sign_gzip writes the signed
+	output to a temp file beside the original and renames it into
+	place (keeping the original's mode and owner), so a failure can no
+	longer truncate the original; it no longer uses $temp_dir. sign
+	and sign_gzip check signify's exit status and ignore SIGPIPE while
+	sending the passphrase. Fixed literal "\n" in two error messages
+	and "directory dir" in sign. Corrected the pledge/unveil notes and
+	the required Perl version. Added a named-argument form to sign,
+	verify, sign_gzip and verify_gzip; the positional form still works
+	and is to be removed once all callers (install.pl, distribute.pl,
+	reportnew, sigtree.pl) use the named form.
