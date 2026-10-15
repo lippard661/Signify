@@ -55,6 +55,15 @@
 #    positional form still works and is to be removed once all callers
 #    (install.pl, distribute.pl, reportnew, sigtree.pl) use the named
 #    form.
+# Modified 15 October 2026 by Claude Opus 5.5 at the direction of Jim
+#    Lippard (version 1.4): sign and sign_gzip send the passphrase with
+#    syswrite instead of print. With a key made with signify -n, signify
+#    can exit before reading it; the buffered print was then flushed by
+#    close, the flush failed with EPIPE, and Perl's close set $? to -1,
+#    so a successful signing was reported as "signify failed could not
+#    be run" (measured: 10-21% of signings under load). Not 1.3a: a
+#    non-numeric $VERSION makes Signify->VERSION ('1.3') die, which
+#    callers use as their version check.
 
 # Calling (named form; the second argument is a hash reference):
 #    sign ($file, { secret_key_path => $sec, passphrase => $pw,
@@ -115,7 +124,7 @@ use POSIX ();
 @EXPORT = ();
 @EXPORT_OK = qw(get_gzip_signer sign sign_gzip verify verify_gzip signify_error);
 
-$VERSION = '1.3';
+$VERSION = '1.4';
 
 # Global variables.
 
@@ -255,11 +264,15 @@ sub _named_args {
 sub _send_passphrase_and_close {
     my ($fh, $passphrase) = @_;
     local $SIG{PIPE} = 'IGNORE';
-    print $fh "$passphrase\n";
-    # close waits for signify and sets $?. Its own return value is not
-    # used: it is also false when the passphrase write failed with EPIPE,
-    # which happens harmlessly when signify needs no passphrase (a key
-    # made with -n) and has already exited 0.
+    # syswrite, not print: a buffered print is only written when close
+    # flushes it, and if that flush fails with EPIPE (signify, using a
+    # key made with -n, exited without reading) Perl's close returns
+    # with $? = -1 instead of signify's status, so a successful signing
+    # was reported as "signify failed could not be run". An unbuffered
+    # write fails (harmlessly) here, and close has nothing to flush.
+    syswrite ($fh, "$passphrase\n");
+    # close waits for signify and sets $? to its status. close's own
+    # return value is not used: it is false whenever $? is non-zero.
     close ($fh);
     return ($? == 0);
 }

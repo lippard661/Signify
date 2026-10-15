@@ -40,3 +40,4 @@
 	verify, sign_gzip and verify_gzip; the positional form still works
 	and is to be removed once all callers (install.pl, distribute.pl,
 	reportnew, sigtree.pl) use the named form.
+1.4: Fix passphrase bug: write with syswrite instead of print.
